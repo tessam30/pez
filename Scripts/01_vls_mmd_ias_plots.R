@@ -49,12 +49,16 @@ ou_list <- c("Uganda", "Cameroon", "Rwanda", "Tanzania", "Lesotho",
              "Mozambique", "Zimbabwe", "Burundi", "Malawi", "South Sudan",
              "Eswatini", "Democratic Republic of the Congo", "Angola")
 
+# Global filter
+ou_list %>% paste(., collapse = ", ")
+
 psnu_df <- merdata %>% 
   return_latest(pattern = "PSNU_IM_FY19-22_20211112_v1_1.zip") %>% 
   read_msd() %>% 
   filter(operatingunit %in% ou_list,
          fiscal_year <= curr_fy)
 
+outliers <- c("Angola", "South Sudan", "Zimbabwe")
 
 # MUNGE -------------------------------------------------------------------
 
@@ -76,7 +80,7 @@ psnu_df <- merdata %>%
            tx_mmd_6mo =`6 or more months`,
            TX_CURR = total) %>% 
     rowwise() %>% 
-    mutate(tx_mmd_3plus = sum(tx_mmd_3mo, tx_mmd_6mo, na.rm = T)) %>% 
+    mutate(tx_mmd_3plus = sum(tx_mmd_3mo, tx_mmd_6mo)) %>% 
     select(-`Less than 3 months`) %>% 
     mutate(tx_mmd_3plus_sh = tx_mmd_3plus / TX_CURR,
            tx_mmd_6mo_sh = tx_mmd_6mo / TX_CURR)
@@ -126,20 +130,59 @@ psnu_df <- merdata %>%
     mutate(tot_tx_curr = sum(tx_curr_ave, na.rm = T),
            grp_tx_share = tx_curr_ave / tot_tx_curr) %>% 
     ungroup() %>% 
+    mutate(pd = factor(period) %>% as.numeric()) %>% 
     filter(VLS <= 1, 
            VLS > 0) %>% 
-    group_by(snu1) %>% 
+    mutate(pd_flag = ifelse(pd>=5, 1, 0)) %>% 
+    group_by(snu1, pd_flag) %>% 
     mutate(mmd_group_3plus = mean(tx_mmd_3plus_sh, na.rm = T),
            mmd_group_6plus = mean(tx_mmd_6mo_sh, na.rm = T)) %>% 
     ungroup() %>% 
-    mutate(pd = factor(period) %>% as.numeric())
+    clean_countries(colname = "operatingunit") %>% 
+    group_by(snu1, operatingunit) %>% 
+    mutate(tx_mmd_lag = lag(tx_mmd_3plus_sh, n = 2, order = pd)) %>% 
+    ungroup()
+   
   
 
 # EDA ---------------------------------------------------------------------
   
-  # Global filter
-  ou_list %>% paste(., collapse = ", ")
   
+  # Correlation
+  tmp <- df_viz %>% 
+    filter(pd %in% c(7:12)) %>% 
+    summarise(corr = cor(VLS, tx_mmd_lag, use = "pairwise.complete.obs"), 
+              n = n())
+  
+  df_viz %>% 
+    filter(pd %in% c(7:12)) %>% 
+    group_by(operatingunit) %>% 
+    summarise(corr = cor(VLS, tx_mmd_lag, use = "pairwise.complete.obs"), 
+              n = n()) %>% 
+    bind_rows(tmp %>% mutate(operatingunit = "All")) %>% 
+    rename(Country = operatingunit, `Correlation` = corr) %>% 
+    arrange(desc(Correlation)) %>% 
+    gt::gt() %>% 
+    tab_header(
+      title = "Correlations between VLS 3+ MMD two period lag",
+    ) %>% 
+    tab_style(
+      style = cell_text(weight = "bold"),
+      locations = cells_body(
+        rows = Country == "All")
+    ) %>% 
+    fmt_number(
+      columns = c(Correlation), 
+      decimals = 3
+    ) %>% 
+    fmt_number(
+      columns = c(n),
+      decimals = 0
+    )
+    
+  
+  
+# What would data look like if we were to use a threshold for filtering (not a good idea)
   df_viz  %>% 
     ggplot(aes(x = pd, y = VLC, color = ifelse(VLC >= .7, genoa, old_rose))) + 
     geom_point(position = position_jitter(width = 0.2), alpha = 0.5) +
@@ -180,8 +223,9 @@ psnu_df <- merdata %>%
   # Across the SNU1 TX_CURR volume?
   scatter_vls <- function(xvar) {
     df_viz %>% 
-    filter(pd %in% c(5:11)) %>% 
-    ggplot(aes(y = VLS, x = lag({{xvar}}, n = 2, order_by = pd)) +
+    filter(pd %in% c(7:12)) %>% 
+    # filter(pd %in% c(7:12), !operatingunit %in% outliers) %>% 
+    ggplot(aes(y = VLS, x = {{xvar}})) +
     geom_point(alpha = 0.5, color = scooter_med) +
     geom_point(stroke = .5, shape = 1, color = scooter) +
     stat_smooth(aes(weight = TX_CURR*VLC), method = "lm", 
@@ -191,12 +235,12 @@ psnu_df <- merdata %>%
     si_style(facet_space = 0.5) 
   }  
   
-  all_snus <-  scatter_vls(tx_mmd_6mo_sh) +
-    facet_wrap("All SNUs"~period, nrow = 1) +
+  all_snus <-  scatter_vls(tx_mmd_lag) +
+    facet_wrap("All SNUs"~period, nrow = 1, scales = "free") +
     labs(x = NULL, y= NULL) 
   
-  snus_volume <- scatter_vls(tx_mmd_6mo_sh) +
-    facet_wrap(size_label ~ period, nrow = 3) +
+  snus_volume <- scatter_vls(tx_mmd_lag) +
+    facet_wrap(size_label ~ period, nrow = 3, scales = "free") +
     labs(x = "6 Month MMD share of TX_CURR", y = "Viral Load Suppression",
          caption = glue::glue("Source: {source}
                                Notes: Line fitted using a linear model with TX_CURR X Viral Load Coverage weights"))
@@ -208,21 +252,19 @@ psnu_df <- merdata %>%
   si_save("Graphics/snu1_level_VLS_mmd3plus.svg", scale = 1.25,
           height = 8.5, width = 11)
   
+  # Across all OUS
+  snus_ous <- 
+    scatter_vls(tx_mmd_lag) +
+    facet_wrap(~operatingunit, labeller = label_wrap_gen(multi_line=FALSE), nrow = 2) +
+    labs(x = "3 MMD share of TX_CURR", y = "Viral Load Suppression", 
+         caption = glue::glue("Source: {source}
+                               Notes: Line fitted using a linear model with TX_CURR X Viral Load Coverage weights"))
+  # theme(strip.text = element_text(size = 6))
   
   
-  # Show TX_MMD across SNUS
-  df_viz_lead <- df_viz %>% 
-    group_by(snu1, operatingunit) %>% 
-    mutate(VLS_lead = lead(VLS, n = 2, order_by = period),
-           tx_mmd_3plus_sh = ifelse(tx_mmd_3plus_sh == 0, NA_real_, tx_mmd_3plus_sh)) %>% 
-    ungroup() 
+  # Show TX_MMD across SNU
   
-  df_viz_lead %>% 
-    filter(tx_mmd_3plus_sh > 0) %>% 
-    ggplot(aes(x = pd, y = tx_mmd_3plus_sh)) + geom_smooth()
-  
-  
-  df_viz_lead %>% 
+  df_viz %>% 
     ggplot(aes(x = pd)) +
     geom_vline(xintercept = 4.75, size = 2, color = grey20k) +
     geom_half_point(
@@ -245,75 +287,14 @@ psnu_df <- merdata %>%
                 color = scooter, size = 1) +
     si_style_ygrid() +
     scale_x_continuous(breaks = 1:12,
-                       labels = c("Oct-19 (Q1)", "Q2", "Q3", "Q4", "Oct-20 (Q1)", "Q1", "Q2", "Q3", "Oct-21 (Q1)", "Q2" ,"Q3", "Q4")) +
+                       labels = c("Oct-19 (Q1)", "Q2", "Q3", "Q4", "Oct-20 (Q1)", "Q2", "Q3", "Q4", "Oct-21 (Q1)", "Q2" ,"Q3", "Q4")) +
     labs(y = NULL, x = NULL, 
          title = "AS 3 MONTH+ MULTIMONTH DISPENSING SCALED ACROSS SNUS, VIRAL LOAD SUPPRESSION REMAINED STABLE") +
-    scale_y_continuous(labels = percent) 
-  
-  +
+    scale_y_continuous(labels = percent) +
     facet_wrap(~size_label)
   
   
   si_save("Graphics/ias_plot2.svg", scale = 1.25)
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  df_viz %>% 
-    group_by(operatingunit, snu1) %>% 
-    mutate(VLS_lead = lead(VLS, n = 2, order_by = period)) %>% 
-    ungroup() %>% 
-    ggplot(aes(x = pd)) +
-    geom_point(aes(y = tx_mmd_3plus_sh), color = grey10k, position =  position_jitter(width = 0.2)) +
-    geom_point(aes(y = VLS_lead), color = scooter_med, position =  position_jitter(width = 0.2), alpha = 0.25) +
-    stat_smooth(data = . %>% filter(pd > 4), aes(y = tx_mmd_3plus_sh)) +
-    stat_smooth(aes(y = VLS_lead)) +
-    si_style()
-  
-  # Across all OUS
-  snus_ous <- scatter_vls(tx_mmd_6mo_sh) +
-    facet_wrap(~operatingunit, labeller = label_wrap_gen(multi_line=FALSE), nrow = 2) +
-    labs(x = "6 MMD share of TX_CURR", y = "Viral Load Suppression", 
-         caption = glue::glue("Source: {source}
-                               Notes: Line fitted using a linear model with TX_CURR X Viral Load Coverage weights"))
-    # theme(strip.text = element_text(size = 6))
-
-  
-  
-  df_viz %>% 
-    ggplot(aes(y = period, x = VLS, group =size_label)) +
-    geom_point() +
-    facet_wrap(operatingunit~size_label)
-
-  # What does a scatterplot of VLS v MMD look like?
-  df_viz %>% 
-    filter(!pd %in% c(1, 2, 3, 4, 12)) %>% 
-    ggplot(aes(y = VLS, x = tx_mmd_3plus_sh, color = operatingunit)) +
-    geom_point() +
-    stat_smooth(se = F, aes(weight = TX_CURR), color = grey90k) +
-    facet_wrap(~operatingunit, scales = "free") +
-    si_style() +
-    scale_x_continuous(labels = label_percent(1)) +
-    scale_y_continuous(labels = label_percent(1))
-  
-  # What is the correlation across time for each metric?
-  df_viz %>% 
-    filter(pd %in% c(5:11)) %>% 
-    group_by(size_label) %>% 
-    summarise(corr = cor(VLS, tx_mmd_3plus_sh),
-              corr2 = cor(VLS, tx_mmd_6mo_sh, use = "pairwise.complete.obs")) %>% 
-    select(-corr2) %>% 
-    spread(period, corr)
-  
-  lm(VLS ~ tx_mmd_3plus_sh + factor(size_label), data = df_viz) %>% summary()
-  
 
 # CLOUD AND RAINFALL PLOT -------------------------------------------------
 
@@ -350,11 +331,16 @@ psnu_df <- merdata %>%
     scale_y_continuous(labels = label_percent(1)) +
     labs(title = "SNU1 VIRAL LOAD SUPPRESION ROSE CONSIDERABLY FROM FY19 - FY21",
          subtitle = "The distribution of SNU1 VLS tighted as well",
-         x = NULL, y = NULL)
+         x = NULL, y = NULL) +
+    facet_wrap(~size_label)
   
   si_save("Graphics/snu1_level_VLS.svg", scale = 1.25,
           height = 11, width = 8.5)
  
+  # What does TX_MMD 3+ share look like
+  df_viz %>% 
+    ggplot(aes(x = period, y = tx_mmd_lag)) +
+    geom_boxplot() + facet_wrap(~size_label, scales = "free")
 
 # MMD Saturation and VLS --------------------------------------------------
 
@@ -376,7 +362,15 @@ psnu_df <- merdata %>%
                                                     "Medium", "Medium high", "High"))
     ) %>% 
     filter(!is.na(mmd_bin_lab)) 
+  df_viz_mmd %>% select(mmd_3bin, tx)
 
+  # What does distribution look like?
+  df_viz_mmd %>% 
+    ggplot(aes(x = mmd_group_3plus, fill = mmd_bin_lab, color = mmd_bin_lab)) +
+    geom_histogram(bins = 100) +
+    facet_wrap(~period) +
+    si_style()
+  
   
   df_viz_mmd_sum <- 
     df_viz_mmd %>% 
@@ -436,15 +430,6 @@ df_viz_mmd_ou <-
   filter(!is.na(mmd_bin_lab)) %>% 
   ungroup()
 
-df_viz_mmd_sum <- 
-  df_viz_mmd %>% 
-  group_by(pd, mmd_bin_lab, operatingunit) %>% 
-  summarise(num = sum(TX_PVLS, na.rm = T),
-            denom = sum(TX_PVLS_D, na.rm = T),
-            vls = num / denom
-  ) %>% 
-  ungroup()
-
 
   df_viz_mmd_sum %>% 
     select(-c(num, denom)) %>% 
@@ -456,19 +441,65 @@ df_viz_mmd_sum <-
 
 # Basic regression --------------------------------------------------------
 
-  df_viz_lead %>% 
-    filter(pd>4) %>% 
-    group_by(period, operatingunit) %>% 
-    summarise(corr = cor(VLS_lead, tx_mmd_3plus_sh, use = "pairwise.complete.obs")) %>% 
+  # Function for correlation testing
+  source("Scripts/00_helpers.R")
+  
+  df_viz_corr %>% 
+    filter(pd %in% c(7:12)) %>% 
+    group_by(operatingunit) %>% 
+    mutate(corr = cor(VLS, tx_mmd_lag, use = "pairwise.complete.obs")) %>% 
     spread(period, corr)
+  
+  # Nest and look at across ou
+    return_cor(df_viz_corr, operatingunit) 
+    
+  #  
+    return_cor(df_viz_corr, size_label)
+      select(`TX_CURR Group` = size_label, estimate, statistic, `p.value`, obs = parameter) %>% 
+      gt::gt() %>% 
+      fmt_number(columns = 2:4,
+                 decimals = 3)
+    
+    
+  
+  df_viz_corr %>% 
+    clean_countries(colname = "operatingunit") %>% 
+    group_by(operatingunit) %>% 
+    mutate(corr = cor(VLS, tx_mmd_lag, use = "pairwise.complete.obs")) %>% 
+    ungroup() %>% 
+    mutate(ou_order = fct_reorder(paste(operatingunit, percent(corr, 1)), corr, .desc = T)) %>% 
+    filter(pd %in% c(7:12)) %>% 
+    ggplot(aes(x = tx_mmd_lag, y = VLS)) +
+    geom_point(alpha = 0.5, color = scooter_med) +
+    stat_smooth(method = "lm", color = grey50k, fill = grey20k) +
+    facet_wrap(~ou_order, scales = "free") +
+    scale_x_continuous(labels = label_percent(1))+
+    scale_y_continuous(labels = label_percent(1)) +
+    si_style(facet_space = 0.5) +
+    labs(x = "Two-period lagged 3+ MMD share of TX_CURR",
+         y = "Viral load suppression")
 
-  ols_rbst <- estimatr::lm_robust(VLS_lead ~ tx_mmd_3plus_sh + factor(period),
+  ols_rbst <- estimatr::lm_robust(VLS ~ tx_mmd_lag + factor(period),
                                   clusters = operatingunit,
                                   fixed_effects = ~ operatingunit,
-                                  data = df_viz_lead)  
+                                  data = df_viz_corr) 
+  
+  ols_rbst2 <- estimatr::lm_robust(VLS ~ tx_mmd_lag + factor(period),
+                                  clusters = operatingunit,
+                                  fixed_effects = ~ operatingunit,
+                                  data = df_viz_corr %>% 
+                                  filter(!operatingunit %in% c("Nigeria", "Zimbabwe", "South Sudan", "Angola")))  
   
   
-  summary(ols_rbst)  
+  
+  broom::tidy(ols_rbst)
+  broom::augment(old_rbst)
+  plot(ols_rbst)
   
   lm(VLS_lead ~ tx_mmd_3plus_sh + factor(period) + factor(operatingunit), data = df_viz_lead) %>% summary()
+  
+
+# REGRESSIONS ACROSS OUs --------------------------------------------------
+
+  
   
