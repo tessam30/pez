@@ -1,7 +1,7 @@
 # PURPOSE: TX_MMD & VLS analysis at the site level
 # COLLABORATOR: T Essam | 
 # DATE: 2022-01-20
-# NOTES: Seemed like an intersting idea to look at a bit more
+# NOTES: Seemed like an interesting idea to look at a bit more
 
 # GLOBALS -----------------------------------------------------------------
 
@@ -45,7 +45,8 @@
                                                    col_types = mmd_col_types), 
                                     Year = .x %>% substr(5, 8))) 
 
-  mmd2 <- read_excel(path, sheet = mmd_s, col_types = c(mmd_col_types, "text")
+  mmd2 <- read_excel(path, sheet = mmd_s, 
+                     col_types = c(mmd_col_types, "text"))
   
     
   vls1 <- read_excel(path, sheet = vls, 
@@ -71,7 +72,17 @@
     mutate(dup_check2 = row_number()) 
     # filter(dup_check == 1)
   
-  tmp <- mmd_df %>% 
-    left_join(., tmp, by = c("siteCode", "Year"))
+  mmd_vls_df <- mmd_df %>% 
+    full_join(., vls, by = c("siteCode", "Year")) %>% 
+    select(siteCode, clinic_mmd = `clinic.x`, clinic_vl = `clinic.y`, year = Year,
+           group_id, dup_check, dup_check2, everything()) %>% 
+    arrange(siteCode, year) 
     
-    
+
+# WRITE OUTPUT TO GOOGLE DRIVE --------------------------------------------
+
+  load_secrets()
+  gs_id <- "1VSEcyxbONN4Q-oPGVIrpEMcO105b5dWavdRWR8K5cSw"
+  
+  googlesheets4::sheet_write(data = mmd_vls_df, ss = gs_id, sheet = "mmd_vls_df")
+      
