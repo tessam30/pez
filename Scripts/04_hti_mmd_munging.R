@@ -63,14 +63,15 @@
            total_mmd_patients = `Patient Unique`) %>% 
     group_by(siteCode, Year) %>% 
     mutate(dup_check = row_number()) %>% 
-    # filter(dup_check == 1) %>% 
+    filter(dup_check == 1) %>% 
     group_by(siteCode) %>% 
     mutate(group_id = cur_group_id())
   
   vls <- vls1 %>%  
     group_by(siteCode, Year) %>% 
-    mutate(dup_check2 = row_number()) 
-    # filter(dup_check == 1)
+    mutate(dup_check2 = row_number()) %>% 
+    filter(dup_check2 == 1) %>% 
+    mutate(vls = `moins de 1000` / `Total patient`)
   
   mmd_vls_df <- mmd_df %>% 
     full_join(., vls, by = c("siteCode", "Year")) %>% 
@@ -85,4 +86,7 @@
   gs_id <- "1VSEcyxbONN4Q-oPGVIrpEMcO105b5dWavdRWR8K5cSw"
   
   googlesheets4::sheet_write(data = mmd_vls_df, ss = gs_id, sheet = "mmd_vls_df")
+  
+  gs_id2 <- "1VSEcyxbONN4Q-oPGVIrpEMcO105b5dWavdRWR8K5cSw"
+  googlesheets4::sheet_write(data = mmd_vls_df, ss = gs_id2, sheet = "mmd_vls_df_fltr")
       
