@@ -13,9 +13,15 @@
   }
 
   
-  load_site_msd <- function(df) {
-    msd <- read_msd(df) %>% 
-      filter(indicator %in% c("TX_CURR", "TX_PVLS"),  
+  load_site_msd <- function(df, peds = F) {
+    msd <- read_msd(df)
+
+    if(peds == TRUE) {  
+      msd <- msd %>% filter(trendscoarse == "<15")
+    }
+    
+    msd <- msd %>% 
+         filter(indicator %in% c("TX_CURR", "TX_PVLS"),  
              standardizeddisaggregate %in% c("Total Numerator", "Age/Sex/ARVDispense/HIVStatus",
                                              "Total Denominator")) %>% 
       mutate(otherdisaggregate = case_when(

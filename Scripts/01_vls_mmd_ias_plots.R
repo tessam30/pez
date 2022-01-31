@@ -143,7 +143,21 @@ outliers <- c("Angola", "South Sudan", "Zimbabwe")
     mutate(tx_mmd_lag = lag(tx_mmd_3plus_sh, n = 2, order = pd)) %>% 
     ungroup()
    
-  
+  df_viz %>% 
+    select(period, TX_CURR, tx_mmd_3plus, VLC, VLS, ) %>% 
+    gt::gt() %>% 
+    fmt_number(
+      columns = c(TX_CURR, tx_mmd_3plus), 
+      decimals = 0
+    ) %>% 
+    fmt_percent(
+      columns = c(VLC, VLS),
+      decimals = 0
+    ) %>% 
+    fmt_missing(
+      columns = everything(),
+      missing_text = ""
+    )
 
 # EDA ---------------------------------------------------------------------
   
